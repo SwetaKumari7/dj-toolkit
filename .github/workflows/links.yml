@@ -1,0 +1,101 @@
+name: Weekly link check
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      test_broken_link:
+        description: "Test issue reporting with a temporary broken URL"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  check-links:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - id: pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Install website dependencies
+        run: npm ci --ignore-scripts
+        working-directory: website
+
+      - name: Build website
+        run: npm run build
+        working-directory: website
+        env:
+          SITE: ${{ steps.pages.outputs.origin }}
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Prepare optional manual test link
+        env:
+          TEST_BROKEN_LINK: ${{ inputs.test_broken_link }}
+        run: |
+          if [[ "$TEST_BROKEN_LINK" == "true" ]]; then
+            printf '%s\n' '[manual test](https://httpbin.org/status/404)' > "$RUNNER_TEMP/lychee-manual-test.md"
+          else
+            : > "$RUNNER_TEMP/lychee-manual-test.md"
+          fi
+
+      - name: Check external links
+        id: lychee
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: >-
+            --root-dir "$GITHUB_WORKSPACE"
+            --verbose
+            --no-progress
+            './**/*.md'
+            './website/dist/**/*.html'
+            "$RUNNER_TEMP/lychee-manual-test.md"
+          token: ${{ github.token }}
+          output: ${{ runner.temp }}/lychee-report.md
+          format: markdown
+          jobSummary: true
+          fail: false
+          failIfEmpty: false
+
+      - name: Create or update the broken-links issue
+        if: steps.lychee.outputs.exit_code != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPORT_PATH: ${{ runner.temp }}/lychee-report.md
+        run: |
+          {
+            echo "## Latest broken-link check"
+            echo
+            echo "Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo
+            cat "$REPORT_PATH"
+          } > "$RUNNER_TEMP/issue-body.md"
+
+          issue_number="$(gh issue list --state open --search 'in:title "Broken links"' --json number --jq '.[0].number // empty')"
+
+          if [[ -n "$issue_number" ]]; then
+            gh issue edit "$issue_number" --body-file "$RUNNER_TEMP/issue-body.md"
+          else
+            gh issue create --title "Broken links" --body-file "$RUNNER_TEMP/issue-body.md"
+          fi
+
+      - name: Fail the run if broken links were found
+        if: steps.lychee.outputs.exit_code != '0'
+        run: exit 1

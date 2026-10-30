@@ -1,0 +1,6 @@
+scheme = ["http", "https"]
+exclude = [
+  '^https://github\.com/<you>/dj-toolkit\.git$',
+]
+exclude_loopback = true
+include_mail = false
