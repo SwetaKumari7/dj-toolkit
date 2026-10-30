@@ -46,6 +46,8 @@ Short guides with one recommendation each: folder structure, folders to rekordbo
 Spotify playlists. Disagree with one? Post a question or a challenge below it. You appear as *Anonymous DJ #xxxx*,
 and for now posts stay on your computer.
 
+No acapella to try it with? [Free acapellas you may download and use](try-it-with.md).
+
 ## Requests
 
 Vote on what gets built next. The page lists the most-wanted ideas, which are GitHub issues; **Vote** opens one on
