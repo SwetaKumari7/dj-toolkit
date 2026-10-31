@@ -1,3 +1,6 @@
+# Checks every link that leaves the repository, in the Markdown files and in the built website, once a week. When one
+# is broken it opens (or updates) a single "Broken links" issue. The job that builds the website and runs lychee can only
+# read; the job that writes the issue runs no code from the repository (docs/maintaining.md).
 name: Weekly link check
 
 on:
@@ -16,11 +19,11 @@ permissions:
 
 jobs:
   check-links:
+    name: Check external links
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    permissions:
-      contents: read
-      issues: write
+    outputs:
+      broken: ${{ steps.lychee.outputs.exit_code != '0' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,16 +38,17 @@ jobs:
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Install website dependencies
-        run: npm ci --ignore-scripts
+        run: npm ci --ignore-scripts # the build needs no install scripts, and a package could hide code in one
         working-directory: website
 
       - name: Build website
         run: npm run build
         working-directory: website
         env:
+          ASTRO_TELEMETRY_DISABLED: 1
           SITE: ${{ steps.pages.outputs.origin }}
           BASE_PATH: ${{ steps.pages.outputs.base_path }}
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }} # reads public ideas and releases without hitting the anonymous rate limit
 
       - name: Prepare optional manual test link
         env:
@@ -74,28 +78,51 @@ jobs:
           fail: false
           failIfEmpty: false
 
-      - name: Create or update the broken-links issue
+      - name: Keep the report for the job that writes the issue
         if: steps.lychee.outputs.exit_code != '0'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lychee-report
+          path: ${{ runner.temp }}/lychee-report.md
+          if-no-files-found: error
+          retention-days: 7
+
+  report:
+    name: Report broken links
+    needs: check-links
+    if: needs.check-links.outputs.broken == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write # the only write permission in this workflow, on the one job that runs no repository code
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: lychee-report
+
+      - name: Create or update the broken-links issue
         env:
           GH_TOKEN: ${{ github.token }}
-          REPORT_PATH: ${{ runner.temp }}/lychee-report.md
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           {
             echo "## Latest broken-link check"
             echo
-            echo "Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "Workflow run: $RUN_URL"
             echo
-            cat "$REPORT_PATH"
-          } > "$RUNNER_TEMP/issue-body.md"
+            cat lychee-report.md
+          } > issue-body.md
 
-          issue_number="$(gh issue list --state open --search 'in:title "Broken links"' --json number --jq '.[0].number // empty')"
+          # only this workflow's own issue: the bot's, with the ci label, so nobody else's issue is ever overwritten
+          issue_number="$(gh issue list --repo "$REPO" --state open --author app/github-actions --label ci \
+            --search 'in:title "Broken links"' --json number --jq '.[0].number // empty')"
 
           if [[ -n "$issue_number" ]]; then
-            gh issue edit "$issue_number" --body-file "$RUNNER_TEMP/issue-body.md"
+            gh issue edit "$issue_number" --repo "$REPO" --body-file issue-body.md
           else
-            gh issue create --title "Broken links" --body-file "$RUNNER_TEMP/issue-body.md"
+            gh issue create --repo "$REPO" --title "Broken links" --label ci --body-file issue-body.md
           fi
 
-      - name: Fail the run if broken links were found
-        if: steps.lychee.outputs.exit_code != '0'
+      - name: Fail the run, so the broken links show in Actions
         run: exit 1
